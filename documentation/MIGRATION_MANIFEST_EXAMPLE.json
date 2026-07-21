@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-07-16T00:00:00.000Z",
+  "projectName": "EnterpriseComplexDashboard",
+  "sourcePackage": "EnterpriseComplexDashboard.qvw",
+  "parserVersion": "2.0.0",
+  "expressionSummary": {
+    "total": 71,
+    "automatic": 65,
+    "manual": 6,
+    "measures": 23,
+    "calculatedColumns": 23,
+    "parameters": 20
+  },
+  "modelReadiness": "ready-with-warnings",
+  "tables": [
+    {
+      "id": "TBL-factsales",
+      "name": "FactSales",
+      "sourceName": "FactSales",
+      "kind": "fact",
+      "columnCount": 18,
+      "measureCount": 12
+    }
+  ],
+  "relationships": [
+    {
+      "id": "REL-dimcustomer-customeroid-factsales-customerid",
+      "cardinality": "one-to-many",
+      "crossFilterDirection": "single",
+      "active": true,
+      "source": "manual",
+      "confidence": 100,
+      "userApproved": true
+    }
+  ],
+  "visualBindings": [],
+  "notes": [
+    "Converted expressions and reviewed relationships are physically included in the SemanticModel/definition TMDL folder.",
+    "Visual bindings retain QVW object-to-Power BI artifact traceability.",
+    "Unsupported expressions are retained with remediation guidance."
+  ]
+}

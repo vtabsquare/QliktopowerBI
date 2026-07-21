@@ -1,0 +1,3 @@
+connection_name,source_type,server_or_host,database,schema_or_folder,object_or_file,current_qlik_reference,power_bi_target_parameter,gateway_required,owner,notes
+Sales_SQL,SQL Server,sql-host.example.local,SalesDW,dbo,FactSales,LIB CONNECT TO 'Sales_SQL',pSalesServer,true,Data Platform Team,Do not include passwords
+Customer_Files,Excel,, ,C:\Data\Customer,Customers.xlsx,lib://CustomerFiles/Customers.xlsx,pCustomerFolder,true,Business Operations,Replace local path with governed location

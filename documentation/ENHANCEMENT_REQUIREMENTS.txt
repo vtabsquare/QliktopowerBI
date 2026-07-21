@@ -1,0 +1,1377 @@
+You are enhancing an existing enterprise QlikView-to-Power BI migration application.
+
+The existing application already supports:
+
+- User authentication
+- Instruction page after login
+- ZIP, QVW, QVS and QlikView PRJ-folder upload
+- QlikView script parsing
+- QVW UI metadata analysis
+- Sheets
+- Visualizations
+- Expressions
+- Variables
+- Parameters
+- Bookmarks
+- Actions
+- Triggers
+- Macros
+- Extensions
+- Initial Power BI mapping
+- PBIP package generation
+
+Do not rebuild the application from scratch.
+
+Inspect the existing architecture, routes, stores, parsers, types, components, services and export logic before making changes. Preserve all working functionality and implement the following requirements as a production-ready, generic and reusable enhancement.
+
+The solution must work for different QlikView applications and must not contain logic hardcoded for the provided test package.
+
+======================================================================
+PRIMARY OBJECTIVE
+======================================================================
+
+Enhance the application so that:
+
+1. Every expression identified through QVW UI analysis is captured in a centralized expression inventory.
+2. Each QlikView expression is translated into an appropriate Power BI implementation.
+3. Converted expressions are written into the generated PBIP semantic model.
+4. Generated report visuals reference the converted measures, columns, parameters and fields.
+5. The application displays a complete Power BI Data Model view before export.
+6. Users can add, edit, delete, activate, deactivate and validate relationships.
+7. Relationship changes made in the UI are persisted into the final PBIP package.
+8. Unsupported or partially converted expressions are never silently ignored.
+9. The final PBIP package opens successfully and contains the reviewed semantic model, expressions, relationships and report visuals.
+
+======================================================================
+NON-NEGOTIABLE ENGINEERING RULES
+======================================================================
+
+Do not generate placeholder files, dummy functions, mocked conversion results or sample-only logic.
+
+Do not hardcode object IDs, table names, field names, expression names, sheet names or test-package values.
+
+Do not overwrite existing functionality that already works.
+
+Do not use regular expressions alone as the full expression-conversion engine. Use tokenization, parsing, normalized expression nodes and deterministic translation rules.
+
+AI may be used only as an optional fallback recommendation layer. The core expression conversion must remain deterministic, testable and explainable.
+
+Do not silently remove unsupported QlikView functionality.
+
+Every unsupported feature must produce:
+
+- Original expression
+- Object ID
+- Sheet name
+- Reason for failure
+- Unsupported function or construct
+- Severity
+- Recommended manual remediation
+- Migration status
+
+All fixes must be generic, reusable and capable of handling multiple QVW/PRJ packages.
+
+Maintain strict TypeScript typing.
+
+The completed application must pass:
+
+npm install
+npx tsc --noEmit
+npm run build
+
+======================================================================
+PART 1 — CENTRALIZED QVW EXPRESSION INVENTORY
+======================================================================
+
+Create a unified expression inventory by extracting expressions from every applicable QVW PRJ source.
+
+Expressions may appear in:
+
+- Chart measures
+- Calculated dimensions
+- Dynamic labels
+- Chart titles
+- Subtitles
+- Footnotes
+- Reference lines
+- Sort expressions
+- Visibility conditions
+- Calculation conditions
+- Background-colour expressions
+- Text-colour expressions
+- Number-format expressions
+- Button actions
+- Bookmark actions
+- Sheet triggers
+- Document triggers
+- Variable definitions
+- Input-box definitions
+- Slider definitions
+- Alternate-state objects
+- Extension-object properties
+- Cyclic groups
+- Drill-down groups
+
+Each expression record must contain at least:
+
+- Unique expression ID
+- QVW document ID
+- Sheet ID
+- Sheet name
+- Object ID
+- Object title
+- Object type
+- Expression role
+- Original Qlik expression
+- Normalized Qlik expression
+- Expression label
+- Enabled or disabled status
+- Number format
+- Total mode
+- Sort order
+- Alternate state
+- Referenced tables
+- Referenced fields
+- Referenced variables
+- Referenced bookmarks
+- Referenced objects
+- Functions used
+- Set Analysis usage
+- Aggr usage
+- Inter-record function usage
+- Nested-expression depth
+- Dependency list
+- Proposed Power BI artifact type
+- Generated DAX
+- Conversion status
+- Conversion confidence
+- Warnings
+- Errors
+- Manual remediation guidance
+
+Supported expression roles must include:
+
+- Measure
+- Calculated column candidate
+- Calculated table candidate
+- Calculated dimension
+- Visual filter
+- Conditional formatting
+- Dynamic title
+- Visibility rule
+- Sort rule
+- Parameter expression
+- Navigation action
+- Bookmark action
+- Unsupported visual-only expression
+
+Deduplicate identical expressions where appropriate, but retain all usage locations.
+
+For example, the same measure expression may be used in multiple objects. The system may generate one reusable Power BI measure, but it must retain all QlikView object references.
+
+======================================================================
+PART 2 — QLIK EXPRESSION TOKENIZER AND AST
+======================================================================
+
+Implement or enhance a modular Qlik-expression parser.
+
+Recommended structure:
+
+src/lib/migration/expression/
+    core/
+        ExpressionTokenizer.ts
+        ExpressionParser.ts
+        ExpressionAst.ts
+        ExpressionTypes.ts
+        ExpressionContext.ts
+        ExpressionDiagnostics.ts
+        ExpressionUtils.ts
+
+    parsers/
+        FunctionCallParser.ts
+        AggregationParser.ts
+        SetAnalysisParser.ts
+        SetModifierParser.ts
+        VariableExpansionParser.ts
+        FieldReferenceParser.ts
+        LiteralParser.ts
+        BinaryExpressionParser.ts
+        ConditionalExpressionParser.ts
+        AggrParser.ts
+        TotalQualifierParser.ts
+        InterRecordParser.ts
+        FormattingExpressionParser.ts
+
+    analyzers/
+        ExpressionDependencyAnalyzer.ts
+        ExpressionClassificationAnalyzer.ts
+        MeasureCandidateAnalyzer.ts
+        ColumnCandidateAnalyzer.ts
+        ParameterCandidateAnalyzer.ts
+        UnsupportedFeatureAnalyzer.ts
+
+Do not depend on filenames alone. Parse the actual expression contents.
+
+The expression parser must support nested expressions and preserve source-position information for diagnostics.
+
+The normalized AST must represent:
+
+- Function calls
+- Aggregations
+- Field references
+- Table-qualified fields
+- Variables
+- Literals
+- Operators
+- Conditions
+- Set Analysis
+- Set identifiers
+- Set modifiers
+- Set operators
+- Search strings
+- Element functions
+- TOTAL qualifiers
+- Aggr
+- Nested aggregations
+- Alternate states
+- Sorting expressions
+- Dynamic formatting expressions
+
+======================================================================
+PART 3 — QLIK-TO-DAX TRANSLATION ENGINE
+======================================================================
+
+Build a rule-based Qlik-to-DAX translation engine.
+
+Recommended structure:
+
+src/lib/migration/dax/
+    DaxTranslator.ts
+    DaxTranslationContext.ts
+    DaxTypes.ts
+    DaxNameResolver.ts
+    DaxDependencyResolver.ts
+    DaxMeasureBuilder.ts
+    DaxColumnBuilder.ts
+    DaxTableBuilder.ts
+    DaxParameterBuilder.ts
+    DaxFormattingBuilder.ts
+    DaxValidationEngine.ts
+
+    translators/
+        AggregationTranslator.ts
+        SetAnalysisTranslator.ts
+        ConditionalTranslator.ts
+        DateFunctionTranslator.ts
+        StringFunctionTranslator.ts
+        NumericFunctionTranslator.ts
+        AggrTranslator.ts
+        InterRecordTranslator.ts
+        VariableTranslator.ts
+        AlternateStateTranslator.ts
+        FormattingTranslator.ts
+
+Convert common Qlik functions and patterns including, but not limited to:
+
+Aggregations:
+- Sum
+- Count
+- Count DISTINCT
+- Avg
+- Min
+- Max
+- Median
+- Only
+- FirstSortedValue
+- Fractile
+- Stdev
+- Variance
+
+Conditions:
+- If
+- Match
+- MixMatch
+- WildMatch
+- Pick
+- Alt
+- IsNull
+- Null
+- Len
+
+Date and time:
+- Date
+- Date#
+- Timestamp
+- Timestamp#
+- Year
+- Month
+- MonthName
+- Week
+- WeekName
+- QuarterName
+- Day
+- WeekDay
+- Today
+- Now
+- AddMonths
+- MonthStart
+- MonthEnd
+- YearStart
+- YearEnd
+- InMonth
+- InYear
+- Age
+- Interval
+
+String:
+- Left
+- Right
+- Mid
+- Trim
+- LTrim
+- RTrim
+- Upper
+- Lower
+- Replace
+- SubField
+- Index
+- PurgeChar
+- KeepChar
+- Chr
+- Ord
+
+Numeric:
+- Round
+- Ceil
+- Floor
+- RangeSum
+- RangeAvg
+- Fabs
+- Sign
+- Mod
+- Div
+- Exp
+- Log
+- Sqrt
+
+Data-model and lookup:
+- ApplyMap
+- Lookup
+- Exists
+- Peek
+- Previous
+
+Analytical:
+- Aggr
+- Above
+- Below
+- Before
+- After
+- RowNo
+- ColumnNo
+- Rank
+- NoOfRows
+- Dimensionality
+- SecondaryDimensionality
+- Accumulation patterns
+
+Set Analysis:
+- Set identifier
+- Current selection
+- Full set
+- Alternate state
+- Field modifiers
+- Inclusion
+- Exclusion
+- Search conditions
+- Variable-expanded values
+- Date-range filters
+- Numeric-range filters
+- Set union
+- Set intersection
+- Set exclusion
+- Set symmetric difference
+- P and E element functions
+- Multiple field modifiers
+- Nested variable expansion
+
+Examples that must be considered:
+
+Sum(Sales)
+
+Count(DISTINCT CustomerID)
+
+Sum({<Year={$(vSelectedYear)}>} Sales)
+
+Sum({$<Region={'West'}>} Sales)
+
+Sum({1<Year={2025}>} Sales)
+
+Sum({<OrderDate={">=$(vStartDate)<=$(vEndDate)"}>} Sales)
+
+If(Sum(Sales) > 100000, 'High', 'Low')
+
+Aggr(Sum(Sales), Customer, Month)
+
+RangeSum(Above(Sum(Sales), 0, RowNo()))
+
+Every translation result must include:
+
+- Original Qlik expression
+- Parsed AST
+- Proposed DAX
+- Generated Power BI artifact type
+- Referenced tables
+- Referenced columns
+- Referenced measures
+- Dependencies
+- Confidence score
+- Warnings
+- Unsupported fragments
+- Explanation of conversion
+- Validation status
+
+======================================================================
+PART 4 — ARTIFACT CLASSIFICATION
+======================================================================
+
+Classify every Qlik expression into the correct Power BI artifact.
+
+Supported classifications:
+
+1. Measure
+2. Calculated column
+3. Calculated table
+4. Field parameter
+5. What-if parameter
+6. Disconnected parameter table
+7. Calculation group candidate
+8. Dynamic format string
+9. Visual-level filter
+10. Page-level filter
+11. Report-level filter
+12. Conditional formatting rule
+13. Dynamic title measure
+14. Bookmark or navigation configuration
+15. Manual redesign required
+
+Use the following principles:
+
+- Aggregated expressions should normally become measures.
+- Row-context transformations should normally become calculated columns or Power Query transformations.
+- Reusable logic should become shared measures rather than duplicated visual expressions.
+- Numeric control variables should become What-if parameters where appropriate.
+- Text-selection variables should become disconnected parameter tables or field parameters.
+- Cyclic groups should become field parameters.
+- Drill-down groups should become Power BI hierarchies.
+- Formatting expressions should become conditional formatting measures or dynamic format strings.
+- Visual visibility conditions should be mapped to supported Power BI behaviour where possible, otherwise marked for redesign.
+- Variables that store expressions should become measures or reusable intermediate measures.
+- Variables that store constants should become parameters or configuration values.
+
+The classification must be reviewable and editable in the UI.
+
+======================================================================
+PART 5 — VARIABLE AND PARAMETER CONVERSION
+======================================================================
+
+Create a dependency-aware variable conversion engine.
+
+Classify Qlik variables as:
+
+- Static numeric variable
+- Static text variable
+- Static date variable
+- Expression variable
+- Script variable
+- UI parameter
+- Input-box variable
+- Slider variable
+- Button-controlled variable
+- Bookmark-controlled variable
+- Cyclic-dimension variable
+- Dynamic title variable
+- Unsupported macro-controlled variable
+
+The UI must show:
+
+- Variable name
+- Definition
+- Evaluated value, when available
+- Usage locations
+- Referenced variables
+- Circular dependency warning
+- Proposed Power BI implementation
+- Generated DAX or parameter table
+- User override
+- Conversion status
+
+Resolve variable dependencies in correct order.
+
+Detect and report:
+
+- Missing variables
+- Circular references
+- Recursive variable expansion
+- Variables with environment-dependent values
+- Variables modified by macros
+- Variables modified by actions
+- Variables with conflicting definitions
+
+======================================================================
+PART 6 — EXPRESSION REVIEW UI
+======================================================================
+
+Add a new application page after QVW Analysis:
+
+Route suggestion:
+
+/app/expression-conversion
+
+Page title:
+
+Qlik Expressions → Power BI Logic
+
+The page must include summary cards:
+
+- Total expressions
+- Automatically converted
+- Converted with warnings
+- Manual review required
+- Unsupported
+- Measures generated
+- Calculated columns generated
+- Parameters generated
+- Formatting rules generated
+- Expressions with missing dependencies
+
+Provide filters for:
+
+- Sheet
+- Object
+- Object type
+- Expression role
+- Conversion status
+- Power BI artifact type
+- Function
+- Variable
+- Severity
+- Confidence level
+
+Provide a searchable table with:
+
+- Expression label
+- Sheet
+- Object
+- Original Qlik expression
+- Proposed artifact type
+- Generated DAX
+- Conversion status
+- Confidence
+- Warning count
+
+Selecting an expression must open a detailed editor containing:
+
+- Original Qlik expression
+- Parsed structure
+- Referenced fields
+- Referenced variables
+- Dependency graph
+- Generated DAX
+- Power BI artifact type
+- Measure home table
+- Display folder
+- Format string
+- Description
+- Conversion explanation
+- Warnings
+- Errors
+- Manual override
+- Reset-to-generated option
+- Validate option
+- Save option
+
+Users must be allowed to:
+
+- Edit generated DAX
+- Change measure name
+- Change artifact type
+- Change home table
+- Change display folder
+- Change format
+- Map missing fields
+- Map missing tables
+- Select a parameter implementation
+- Mark an expression as approved
+- Mark an expression as manual
+- Exclude an expression with a mandatory reason
+
+Never discard user-approved edits when navigating between pages.
+
+======================================================================
+PART 7 — EXPRESSION DEPENDENCY GRAPH
+======================================================================
+
+Create a dependency graph covering:
+
+- Qlik expression → variable
+- Qlik expression → field
+- Generated measure → measure
+- Measure → table
+- Parameter → measure
+- Visual → measure
+- Bookmark → filter
+- Action → variable
+- Action → bookmark
+- Action → page
+
+The dependency resolver must determine the correct semantic-model creation order.
+
+Example:
+
+Base measure:
+[Total Sales]
+
+Dependent measure:
+[Sales Margin]
+
+Dependent KPI:
+[Sales Margin %]
+
+The PBIP generator must create all base artifacts before dependent artifacts.
+
+Detect:
+
+- Circular measure dependencies
+- Missing referenced measures
+- Missing columns
+- Missing tables
+- Invalid renamed references
+- Name collisions
+- Duplicate expressions
+- Unused generated measures
+
+======================================================================
+PART 8 — POWER BI DATA MODEL VIEW
+======================================================================
+
+Add a new page after expression conversion:
+
+Route suggestion:
+
+/app/powerbi-model
+
+Page title:
+
+Power BI Data Model
+
+This page must visually represent the proposed Power BI semantic model before export.
+
+Display:
+
+- Tables
+- Columns
+- Measures
+- Calculated columns
+- Calculated tables
+- Hierarchies
+- Parameters
+- Relationships
+- Hidden fields
+- Data types
+- Key columns
+- Fact and dimension classification
+- Source Qlik table
+- Generated Power Query name
+- Measure count
+- Column count
+
+Use a professional interactive node-and-edge model diagram.
+
+Each table must appear as a movable model card.
+
+Each card must display:
+
+- Table name
+- Table classification
+- Key columns
+- Important fields
+- Measures
+- Hidden-field indicators
+- Source lineage
+- Warning indicators
+
+Provide controls for:
+
+- Zoom in
+- Zoom out
+- Fit to screen
+- Auto layout
+- Reset layout
+- Search table
+- Search field
+- Show relationships
+- Show lineage
+- Show only selected table
+- Show fact tables
+- Show dimension tables
+- Show disconnected tables
+- Show parameter tables
+- Show calculated tables
+
+Persist table positions within the project state.
+
+======================================================================
+PART 9 — ORIGINAL QLIK MODEL VERSUS POWER BI MODEL
+======================================================================
+
+Provide three model-view modes:
+
+1. Original Qlik model
+2. Proposed Power BI model
+3. Side-by-side comparison
+
+The comparison view must show:
+
+- Original table
+- Proposed table
+- Renamed tables
+- Merged tables
+- Split tables
+- Removed staging tables
+- Removed mapping tables
+- Removed synthetic-key tables
+- Generated dimensions
+- Generated fact tables
+- Generated bridge tables
+- Generated parameter tables
+- Original Qlik associations
+- Proposed Power BI relationships
+- Relationship differences
+- Unmapped fields
+- Unresolved associations
+
+Include clear migration-status indicators:
+
+- Preserved
+- Converted
+- Modified
+- Removed
+- Generated
+- Requires review
+- Unsupported
+
+======================================================================
+PART 10 — RELATIONSHIP EDITOR
+======================================================================
+
+Add a complete relationship editor to the Power BI Data Model page.
+
+Users must be able to:
+
+- Add a relationship
+- Edit a relationship
+- Delete a relationship
+- Activate a relationship
+- Deactivate a relationship
+- Change source table
+- Change source column
+- Change target table
+- Change target column
+- Change cardinality
+- Change cross-filter direction
+- Change active status
+- Mark a relationship as manually approved
+- Restore an inferred relationship
+- Add relationship notes
+
+Supported cardinalities:
+
+- One-to-many
+- Many-to-one
+- One-to-one
+- Many-to-many
+
+Supported filter directions:
+
+- Single
+- Both
+
+Relationship editor fields:
+
+- Relationship ID
+- From table
+- From column
+- To table
+- To column
+- Cardinality
+- Cross-filter direction
+- Active status
+- Inferred or manual
+- Source Qlik association
+- Confidence
+- Data-type compatibility
+- Nullability warning
+- Uniqueness warning
+- Ambiguity warning
+- Circular-filter warning
+- Notes
+
+Implement relationship creation through:
+
+- Form-based editor
+- Dragging a field from one table to a field in another table
+
+Before saving a relationship, validate:
+
+- Both tables exist
+- Both columns exist
+- Data types are compatible
+- One-side column is sufficiently unique where required
+- Relationship is not duplicated
+- Relationship does not produce an invalid loop
+- Relationship does not create ambiguous active filter paths
+- Relationship direction is valid
+- Cardinality is valid
+- Referenced generated tables are included in export
+
+======================================================================
+PART 11 — RELATIONSHIP INFERENCE ENGINE
+======================================================================
+
+Enhance RelationshipBuilder so relationships are inferred using multiple signals.
+
+Use:
+
+- Exact field-name match
+- Normalized field-name match
+- Key naming conventions
+- Source Qlik associations
+- Qlik synthetic-key analysis
+- Table lineage
+- Join conditions
+- ApplyMap relationships
+- Resident-load lineage
+- Data type
+- Uniqueness
+- Null percentage
+- Distinct count
+- Fact and dimension classification
+- Business-key detection
+- Date-table detection
+- Bridge-table detection
+
+Do not infer relationships solely because two columns share a name.
+
+Every inferred relationship must contain:
+
+- Confidence score
+- Supporting evidence
+- Risk level
+- Validation messages
+- User approval status
+
+Provide an option:
+
+Accept all high-confidence relationships
+
+This must accept only relationships above a configurable confidence threshold and with no critical validation issue.
+
+======================================================================
+PART 12 — MODEL VALIDATION
+======================================================================
+
+Create a semantic-model validation engine.
+
+Validate:
+
+- Missing primary or business keys
+- Duplicate keys
+- Null keys
+- Data-type mismatch
+- Many-to-many risks
+- Bidirectional-filter risks
+- Circular filter paths
+- Ambiguous active paths
+- Disconnected fact tables
+- Orphan dimensions
+- Multiple date relationships
+- Inactive date relationships
+- Missing date table
+- Auto date/time dependency
+- Hidden key-column recommendations
+- Synthetic-key remnants
+- Circular references
+- Relationship references to excluded tables
+- Measures referencing missing columns
+- Measures referencing deleted tables
+- Parameters not connected to measures
+- Visuals referencing unavailable fields
+- Invalid DAX names
+- Duplicate measure names
+- Invalid display folders
+- Invalid format strings
+
+Classify diagnostics as:
+
+- Information
+- Warning
+- Error
+- Blocking error
+
+PBIP generation must be blocked only for genuine blocking errors.
+
+Warnings must be displayed but may be approved by the user.
+
+======================================================================
+PART 13 — MODEL TABLE AND FIELD EDITING
+======================================================================
+
+Allow users to edit:
+
+- Table name
+- Table description
+- Fact or dimension classification
+- Hidden status
+- Column name
+- Column data type
+- Column hidden status
+- Sort-by column
+- Default summarization
+- Format string
+- Data category
+- Key-column designation
+- Measure name
+- Measure description
+- Measure home table
+- Display folder
+- Measure format
+- Parameter settings
+- Hierarchy composition
+
+All renamed objects must update dependent:
+
+- DAX expressions
+- Relationships
+- Visual bindings
+- Filters
+- Parameters
+- Bookmarks
+- Navigation
+- Export metadata
+
+Use stable internal IDs so renaming does not break object references.
+
+======================================================================
+PART 14 — PBIP SEMANTIC MODEL GENERATION
+======================================================================
+
+Enhance the PBIP generator so it exports all approved artifacts.
+
+The semantic model must include:
+
+- Imported tables
+- Calculated tables
+- Columns
+- Calculated columns
+- Measures
+- Intermediate dependency measures
+- Dynamic format strings where supported
+- Hierarchies
+- What-if parameter tables
+- Disconnected parameter tables
+- Field parameter tables
+- Relationships
+- Active and inactive relationships
+- Hidden fields
+- Data types
+- Sort-by-column settings
+- Descriptions
+- Display folders
+- Number formats
+- Data categories
+- Table annotations
+- Source-expression annotations
+- Migration-status annotations
+
+For each generated measure, retain traceability metadata:
+
+- Original Qlik expression
+- Original QVW object
+- Original sheet
+- Conversion status
+- Conversion warnings
+- User-approved status
+
+Where the target format supports annotations, store the traceability there. Otherwise include a migration-manifest file in the export package.
+
+Do not create duplicate measures for identical reusable logic unless the user explicitly requests separate copies.
+
+Use stable and sanitized names.
+
+Name collision handling must be deterministic.
+
+Example:
+
+Total Sales
+Total Sales 2
+
+should not be silently produced.
+
+Instead generate clear collision diagnostics and a deterministic proposed name such as:
+
+Total Sales
+Total Sales - Regional Context
+
+======================================================================
+PART 15 — REPORT VISUAL BINDING
+======================================================================
+
+Generated Power BI visuals must use the approved semantic-model artifacts.
+
+Each converted Qlik visualization must reference:
+
+- Generated measure IDs
+- Generated column IDs
+- Generated hierarchy IDs
+- Parameter-table fields
+- Visual filters
+- Page filters
+- Report filters
+- Sort definitions
+- Conditional-formatting measures
+- Dynamic-title measures
+
+Do not embed unresolved Qlik expressions directly into a Power BI visual.
+
+Before export, validate every visual binding.
+
+For each visual show:
+
+- Original Qlik object
+- Target Power BI visual
+- Bound dimensions
+- Bound measures
+- Filters
+- Sort
+- Conditional formatting
+- Dynamic title
+- Navigation
+- Bookmark
+- Validation result
+
+If a visual cannot be generated automatically, include a placeholder visual specification only when it is clearly marked:
+
+Manual visual redesign required
+
+The original expression and mapping instructions must still be available.
+
+======================================================================
+PART 16 — BOOKMARKS, ACTIONS AND NAVIGATION
+======================================================================
+
+Convert supported Qlik actions into Power BI report behaviours where possible.
+
+Examples:
+
+- Activate sheet → page navigation
+- Apply bookmark → Power BI bookmark
+- Clear selections → reset bookmark or clear-filter behaviour
+- Select field values → bookmark, slicer state or filter configuration
+- Set numeric variable → What-if parameter selection
+- Set dimension variable → field parameter
+- Launch URL → web URL action
+- Show or hide object → bookmark-based visibility where practical
+- Cyclic group → field parameter
+- Drill-down group → hierarchy
+
+For unsupported actions:
+
+- Preserve original action
+- Identify calling object
+- Explain why conversion is unsupported
+- Recommend Power BI replacement
+- Mark as manual remediation
+
+======================================================================
+PART 17 — UI NAVIGATION ORDER
+======================================================================
+
+Update the authenticated application navigation to follow this sequence:
+
+1. Instructions
+2. Upload
+3. File Inventory
+4. QVS Script Analysis
+5. QVW UI Analysis
+6. Expression Conversion
+7. Sources
+8. Data Types
+9. Power Query
+10. Final Tables
+11. Power BI Data Model
+12. Relationship Editor
+13. Measures and Parameters
+14. Visual Mapping
+15. Validation
+16. Export PBIP
+17. Logs
+
+The relationship editor may be integrated into the Power BI Data Model page, but it must also be directly accessible from navigation.
+
+======================================================================
+PART 18 — PROJECT STATE AND PERSISTENCE
+======================================================================
+
+Persist:
+
+- Uploaded-file inventory
+- Parsed QVW metadata
+- Parsed QVS metadata
+- Expression conversion results
+- User-edited DAX
+- Artifact classifications
+- Table names
+- Column names
+- Data types
+- Relationships
+- Relationship layout positions
+- User approvals
+- Exclusions
+- Validation decisions
+- Export configuration
+
+Do not lose state when users navigate between pages.
+
+When the user uploads a new project, create a new project workspace instead of mixing state with the previous upload.
+
+Provide:
+
+- Project ID
+- Project name
+- Last modified time
+- Source package name
+- Parser version
+- Model version
+- Export version
+
+======================================================================
+PART 19 — PIPELINE LOGS
+======================================================================
+
+Enhance pipeline logs to show:
+
+- Files extracted
+- QVS operations parsed
+- QVW sheets detected
+- QVW objects detected
+- Expressions detected
+- Expressions normalized
+- Measures generated
+- Calculated columns generated
+- Parameters generated
+- Unsupported expressions
+- Dependencies resolved
+- Tables generated
+- Relationships inferred
+- Relationships approved
+- Relationship warnings
+- Visuals mapped
+- Visual bindings validated
+- PBIP semantic model generated
+- PBIP report generated
+- PBIP validation errors
+- PBIP export readiness
+
+Example:
+
+Upload/extraction: 137 files
+QVW sheets: 8
+QVW objects: 64
+QVW expressions: 42
+Expression conversion: 35 automatic, 5 warning, 2 manual
+Measures generated: 31
+Calculated columns generated: 4
+Parameters generated: 3
+Relationships inferred: 12
+Relationships approved: 10
+Relationship warnings: 2
+Visuals mapped: 48
+PBIP readiness: Ready with 4 warnings
+
+======================================================================
+PART 20 — EXPORT READINESS GATE
+======================================================================
+
+Before enabling PBIP download, verify:
+
+- At least one final table exists
+- All exported tables have valid partitions
+- All relationships reference valid tables and columns
+- All approved measures have valid dependencies
+- No duplicate semantic-model object names exist
+- No visual references missing measures or fields
+- Required parameter tables exist
+- Required date table exists
+- Blocking diagnostics are resolved
+- Semantic model files are syntactically valid
+- Report files are syntactically valid
+- Migration manifest is included
+- Export ZIP structure is complete
+
+Display a readiness checklist in the UI.
+
+Statuses:
+
+- Not ready
+- Ready with warnings
+- Ready
+
+======================================================================
+PART 21 — TESTING REQUIREMENTS
+======================================================================
+
+Use the supplied test package as a regression test:
+
+EnterpriseComplexQlikProject_With_QVW_PRJ_Visuals_Updated.zip
+
+Expected minimum extraction:
+
+- 8 sheets
+- 64 objects
+- 40 or more expressions
+- 15 variables
+- 5 bookmarks
+- 12 or more actions
+- 10 or more triggers
+- 3 macros
+- 3 extensions
+
+The package is a test fixture only. Do not hardcode these counts.
+
+Create automated tests for:
+
+- Expression tokenizer
+- Expression parser
+- Nested functions
+- Set Analysis
+- Variable expansion
+- Aggr
+- TOTAL qualifier
+- Date filters
+- Numeric filters
+- Expression classification
+- DAX translation
+- Dependency ordering
+- Missing field detection
+- Circular variable dependencies
+- Duplicate measure names
+- Relationship inference
+- Relationship CRUD
+- Cardinality validation
+- Ambiguous relationship paths
+- Model persistence
+- PBIP semantic-model generation
+- Visual binding validation
+- Export readiness
+
+Create representative unit-test expressions independent of the uploaded package.
+
+======================================================================
+PART 22 — REQUIRED DELIVERABLES
+======================================================================
+
+Deliver:
+
+1. Complete updated source package
+2. Code-only patch package
+3. Implementation summary
+4. Changed-file inventory
+5. Architecture document
+6. Expression conversion support matrix
+7. Unsupported-feature matrix
+8. Relationship inference rules
+9. PBIP generation flow
+10. Test report
+11. Local run instructions
+12. Production build instructions
+13. Known limitations
+14. Migration-manifest example
+
+The complete source package must exclude node_modules.
+
+Include:
+
+package.json
+package-lock.json
+src
+public
+scripts
+tests
+documentation
+.env.example
+
+======================================================================
+PART 23 — ACCEPTANCE CRITERIA
+======================================================================
+
+The implementation is accepted only when all the following are true:
+
+- Existing login works.
+- Existing instruction page works.
+- Existing upload works.
+- Existing QVS parsing works.
+- Existing QVW UI analysis works.
+- Every detected QVW expression appears in the centralized expression inventory.
+- Every expression has a conversion status.
+- Supported expressions produce DAX.
+- Generated DAX is editable.
+- Edited DAX persists.
+- Variables are converted into appropriate artifacts.
+- Expression dependencies are resolved.
+- Generated measures are written into PBIP.
+- Generated calculated columns are written into PBIP.
+- Generated parameter tables are written into PBIP.
+- Generated visuals reference semantic-model artifacts.
+- Power BI Data Model view is displayed.
+- Original Qlik and proposed Power BI models can be compared.
+- Relationships can be added.
+- Relationships can be edited.
+- Relationships can be deleted.
+- Active and inactive relationships are supported.
+- Relationship validation is displayed.
+- Relationship edits persist.
+- Relationship edits are written into PBIP.
+- Model and visual validation runs before export.
+- Unsupported expressions are clearly reported.
+- Pipeline logs show accurate counts.
+- TypeScript compilation succeeds.
+- Production build succeeds.
+- Export package is downloadable.
+- Generated PBIP contains the approved model and expressions.
+- Existing features are not regressed.
+
+======================================================================
+FINAL IMPLEMENTATION PRINCIPLE
+======================================================================
+
+The system must establish one traceable migration chain:
+
+Original QlikView document
+→ QVW sheet
+→ QVW object
+→ Original Qlik expression
+→ Parsed expression AST
+→ Variable and field dependencies
+→ Power BI artifact classification
+→ Generated or user-edited DAX
+→ Semantic-model table
+→ Relationship
+→ Power BI visual
+→ PBIP export
+
+At every stage, preserve traceability, validation status, diagnostics and user overrides.
+
+Do not finish by only adding UI screens.
+
+The generated expressions and relationship decisions must be physically included in the final PBIP package.

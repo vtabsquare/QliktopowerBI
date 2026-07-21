@@ -1,0 +1,541 @@
+The best design is to make the application behave like a migration compiler, not a script-conversion utility.
+
+For your example, Sales should be treated as the main fact table. The engine should understand how Sales is constructed, clean the source, apply transformations in the correct order, join only the required attributes, remove unnecessary duplicated columns, validate the final output, and only then generate Power Query and the Power BI model.
+
+Recommended processing architecture
+Qlik files
+→ Parse all load scripts
+→ Build table and field lineage
+→ Identify final tables and table grain
+→ Create an execution plan
+→ Generate staging queries
+→ Apply cleansing and row-level transformations
+→ Reconstruct joins
+→ Apply post-join calculations
+→ Remove duplicated/unwanted columns
+→ Apply final data types
+→ Validate the M queries and sample output
+→ Design relationships
+→ Generate PBIP
+
+The important point is that the application should first create a complete internal execution plan. It should not generate Power Query immediately while it is still parsing individual Qlik statements.
+
+Recommended Sales processing flow
+
+For this report, the engine should produce a flow similar to this:
+
+Sales source
+→ Select required source columns
+→ Clean invalid values
+→ Apply initial data types
+→ Apply Sales row-level calculations
+→ Apply Sales filters
+→ Join Customers
+→ Join Products
+→ Join Employees
+→ Join Warehouse or other lookup tables
+→ Apply calculations dependent on joined columns
+→ Remove temporary and duplicate columns
+→ Select final Sales columns
+→ Apply authoritative reviewed data types
+→ Validate final output
+User-friendly Power Query steps
+
+The visible Power Query steps for Sales should look like:
+
+Source
+PromotedHeaders
+SelectedSalesColumns
+CleanedSalesValues
+AppliedSourceTypes
+CalculatedSalesFields
+FilteredSalesRows
+JoinedCustomers
+ExpandedCustomerFields
+JoinedProducts
+ExpandedProductFields
+JoinedEmployees
+ExpandedEmployeeFields
+CalculatedFinalFields
+FinalSalesColumns
+ReviewedDataTypes
+
+Every visible step should return a table.
+
+The application should not expose helper steps such as:
+
+ExistingReviewedColumns
+ReviewedValueOperations
+ReviewedMetadataOperations
+JoinColumnList
+ExpansionList
+
+These technical lists should be nested inside the table-producing step or moved into reusable helper functions.
+
+This will make the Applied Steps easy for Power BI developers to understand.
+
+Source and staging design
+
+Every physical source should have a staging query.
+
+For example:
+
+Source_Sales
+Source_Customers
+Source_Products
+Source_Employees
+
+These staging queries should:
+
+Read the original source.
+Promote headers when necessary.
+Preserve all source columns.
+Apply only essential source-level normalization.
+Be load disabled.
+Remain available for lineage and debugging.
+
+Example:
+
+let
+    Source =
+        Csv.Document(
+            SalesBinary,
+            [
+                Delimiter = ",",
+                Encoding = 65001,
+                QuoteStyle = QuoteStyle.Csv
+            ]
+        ),
+
+    PromotedHeaders =
+        Table.PromoteHeaders(
+            Source,
+            [PromoteAllScalars = true]
+        )
+in
+    PromotedHeaders
+
+The final Sales model query should reference Source_Sales.
+
+let
+    Source = Source_Sales,
+    ...
+in
+    ReviewedDataTypes
+
+This keeps physical source access separate from the transformation query and reduces Formula Firewall issues.
+
+Join design
+
+The joins should be generated in a simple and predictable format.
+
+For example, when Qlik contains:
+
+LEFT JOIN (Sales)
+LOAD
+    CustomerID,
+    CustomerName,
+    CountryCode,
+    CountryName,
+    Segment
+RESIDENT Customers;
+
+the Power Query should contain:
+
+JoinedCustomers =
+    Table.NestedJoin(
+        PreviousStep,
+        {"CustomerID"},
+        Source_Customers,
+        {"CustomerID"},
+        "CustomerRows",
+        JoinKind.LeftOuter
+    ),
+
+ExpandedCustomerFields =
+    Table.ExpandTableColumn(
+        JoinedCustomers,
+        "CustomerRows",
+        {
+            "CustomerName",
+            "CountryCode",
+            "CountryName",
+            "Segment"
+        },
+        {
+            "CustomerName",
+            "CountryCode",
+            "CountryName",
+            "Segment"
+        }
+    )
+
+Before creating the join, the engine must validate:
+
+CustomerID exists in Sales
+CustomerID exists in Customers
+The data types are compatible
+The Customers key is unique or its multiplicity is understood
+The requested payload columns exist
+Those payload columns do not already exist in Sales
+
+The application must never silently create a missing join column containing null values. A missing key should be a blocking validation issue.
+
+Pre-join and post-join transformations
+
+The engine must position calculations according to their dependencies.
+
+A calculation using only Sales source fields should occur before the joins.
+
+Example:
+
+SalesAmount - DiscountAmount AS NetSales
+
+This should be calculated before joining Customers or Products.
+
+A calculation using joined fields must occur after the relevant join.
+
+Example:
+
+If(Segment = 'Enterprise', NetSales * 0.95, NetSales) AS AdjustedSales
+
+Since Segment comes from Customers, this calculation must be generated after ExpandedCustomerFields.
+
+The dependency engine should determine this automatically:
+
+AdjustedSales
+depends on NetSales
+depends on Segment
+
+NetSales available after Sales transformations
+Segment available after Customer join
+
+Therefore:
+AdjustedSales must be generated after Customer expansion
+Child-table cleanup after joins
+
+Your expectation is correct.
+
+When the following fields are moved from Customers to Sales:
+
+CustomerName
+CountryCode
+CountryName
+Segment
+
+those same attributes should not remain unnecessarily duplicated in the final Customers semantic table.
+
+The application should maintain two versions:
+
+Source_Customers
+Full source structure
+Load disabled
+Used for joins and lineage
+Customers
+Final semantic-model table
+Contains only required remaining fields
+
+For example:
+
+Source_Customers
+├── CustomerID
+├── CustomerName
+├── CountryCode
+├── CountryName
+├── Segment
+├── CustomerCategory
+├── CustomerStartDate
+└── CreditLimit
+
+After joining the selected attributes into Sales:
+
+Customers
+├── CustomerID
+├── CustomerCategory
+├── CustomerStartDate
+└── CreditLimit
+
+The moved fields are removed from the final Customers model table.
+
+However, the engine must first check whether Customers is still required as a dimension for:
+
+Slicers
+Hierarchies
+Relationships with other fact tables
+Row-level security
+Slowly changing dimension analysis
+Measures
+Visual fields
+
+When no unique attributes remain and no relationship requires the table, the Customers model table should be excluded entirely. Source_Customers should still remain as a load-disabled staging query.
+
+Final projection is essential
+
+Every final query should end with an explicit list of model columns.
+
+For Sales:
+
+FinalSalesColumns =
+    Table.SelectColumns(
+        PreviousStep,
+        {
+            "OrderID",
+            "CustomerID",
+            "ProductID",
+            "EmployeeID",
+            "WarehouseID",
+            "CurrencyCode",
+            "OrderDate",
+            "ShipDate",
+            "Quantity",
+            "SalesAmount",
+            "DiscountAmount",
+            "CostAmount",
+            "NetSales",
+            "GrossProfit",
+            "CustomerName",
+            "CountryCode",
+            "CountryName",
+            "Segment",
+            "ProductName",
+            "Category",
+            "SubCategory",
+            "Brand"
+        },
+        MissingField.Error
+    )
+
+Using MissingField.Error at this stage is safer than silently inserting null columns. It confirms that the generated query truly produced every required field.
+
+Data-type enforcement
+
+The data types selected in the UI should be applied only once at the final stage.
+
+The visible final step should be:
+
+ReviewedDataTypes =
+    Table.TransformColumnTypes(
+        FinalSalesColumns,
+        {
+            {"OrderID", Int64.Type},
+            {"CustomerID", Int64.Type},
+            {"ProductID", Int64.Type},
+            {"EmployeeID", Int64.Type},
+            {"WarehouseID", Int64.Type},
+            {"CurrencyCode", type text},
+            {"OrderDate", type date},
+            {"ShipDate", type date},
+            {"Quantity", Int64.Type},
+            {"SalesAmount", Currency.Type},
+            {"NetSales", Currency.Type},
+            {"GrossProfit", Currency.Type}
+        },
+        "en-US"
+    )
+
+Any sanitisation required before conversion should be nested inside this step:
+
+ReviewedDataTypes =
+    let
+        Sanitised =
+            Table.TransformColumns(
+                FinalSalesColumns,
+                {
+                    {
+                        "OrderDate",
+                        each try Date.From(_) otherwise null,
+                        type date
+                    },
+                    {
+                        "Quantity",
+                        each try Int64.From(_) otherwise null,
+                        Int64.Type
+                    }
+                },
+                null,
+                MissingField.Ignore
+            )
+    in
+        Table.TransformColumnTypes(
+            Sanitised,
+            {
+                {"OrderDate", type date},
+                {"Quantity", Int64.Type}
+            },
+            "en-US"
+        )
+
+This produces only one visible table step.
+
+Data-model design
+
+The engine should not create relationships based on every common field.
+
+For a Sales model, the recommended relationships should generally be:
+
+Calendar[CalendarDate] 1 → * Sales[OrderDate]
+Customers[CustomerID] 1 → * Sales[CustomerID]
+Products[ProductID] 1 → * Sales[ProductID]
+Employees[EmployeeID] 1 → * Sales[EmployeeID]
+Warehouses[WarehouseID] 1 → * Sales[WarehouseID]
+
+But when Customer, Product, or Employee attributes have already been completely denormalised into Sales and the child table has no remaining analytical role, that child model table should be excluded and no relationship should be generated.
+
+Never create relationships using:
+
+CustomerName
+CountryName
+Region
+ProductName
+Category
+Brand
+Department
+Role
+
+These are descriptive attributes, not stable relationship keys.
+
+Composite-key rules
+
+When Qlik uses multiple fields together:
+
+CustomerID + RegionCode
+
+the engine should generate a composite key only when:
+
+Both fields participate in the same Qlik association or join.
+Both sides contain the fields.
+No stable single key already exists.
+The relationship is still required in the final model.
+
+The generated key should be understandable:
+
+CustomerRegionKey =
+    Text.Combine(
+        {
+            if [CustomerID] = null
+                then "<NULL>"
+                else Text.From([CustomerID], "en-US"),
+
+            if [RegionCode] = null
+                then "<NULL>"
+                else Text.From([RegionCode], "en-US")
+        },
+        "¦"
+    )
+
+Do not create composite keys simply because multiple common columns exist.
+
+How AI should be used
+
+AI should not be responsible for writing M syntax from scratch without control.
+
+The recommended approach is:
+
+Deterministic parser and compiler
+→ generates Power Query
+
+Microsoft M parser
+→ validates syntax
+
+Dependency and schema engine
+→ validates fields, steps and query references
+
+Local preview engine
+→ validates sample data output
+
+AI review engine
+→ analyses ambiguous or failed conversions
+→ proposes or applies high-confidence repairs
+
+AI is valuable for:
+
+Determining whether a Qlik table is fact, dimension, aggregate, or staging.
+Resolving ambiguous field aliases.
+Suggesting correct join keys.
+Deciding whether an aggregate should become DAX.
+Explaining why a table or relationship was removed.
+Repairing unsupported Qlik expressions.
+Recommending model simplification.
+
+AI should not bypass deterministic validation.
+
+Preview and Power Query must use the same plan
+
+The current problem occurred because the UI preview and Power Query generation used different execution paths.
+
+The improved engine should create one intermediate plan:
+
+interface TableExecutionPlan {
+  tableName: string;
+  source: SourcePlan;
+  selectedColumns: ColumnPlan[];
+  calculations: CalculationPlan[];
+  filters: FilterPlan[];
+  joins: JoinPlan[];
+  finalColumns: ColumnPlan[];
+  reviewedTypes: DataTypePlan[];
+}
+
+That same plan must drive:
+
+UI ten-row preview
+Power Query M generation
+Field lineage
+Data-model schema
+Validation
+PBIP export
+
+This ensures that when the UI shows five Sales rows, the generated M represents the same source and transformation plan.
+
+Recommended UI structure
+
+For each final table, show:
+
+Overview
+Source Data
+Qlik Logic
+Conversion Plan
+Power Query
+Input Preview
+Output Preview
+Data Types
+Joins
+Final Columns
+Validation
+Model Decision
+
+For Sales, the Conversion Plan should be readable as:
+
+1. Read Sales.csv
+2. Select 12 Sales columns
+3. Clean Quantity, dates and financial amounts
+4. Calculate NetSales and GrossProfit
+5. Filter Quantity greater than zero
+6. Left join Customers using CustomerID
+7. Add CustomerName, CountryCode, CountryName and Segment
+8. Left join Products using ProductID
+9. Add ProductName, Category, SubCategory and Brand
+10. Apply post-join calculations
+11. Select final Sales model columns
+12. Apply reviewed data types
+13. Validate five output rows
+
+This is much easier for users than showing technical helper steps.
+
+Final recommendation
+
+The best default design for the application is:
+
+One complete staging query per source
+One simple table-producing query per final model table
+Direct NestedJoin and Expand steps
+No visible list or record helper steps
+Explicit final column projection
+One final reviewed-type step
+Full child-table pruning after successful joins
+Only key-based relationships
+One execution plan shared by preview and M generation
+Microsoft M-parser validation before export
+Ten-row output validation before PBIP generation
+
+This design will be simpler for users, easier to debug, and considerably more reliable across different

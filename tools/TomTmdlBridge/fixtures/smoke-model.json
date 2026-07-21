@@ -1,0 +1,134 @@
+{
+  "id": "TomTmdlSmokeModel",
+  "name": "TomTmdlSmokeModel",
+  "compatibilityLevel": 1604,
+  "model": {
+    "name": "Model",
+    "culture": "en-US",
+    "sourceQueryCulture": "en-US",
+    "annotations": [
+      {
+        "name": "Migration.Engine",
+        "value": "Microsoft TOM/TMDL"
+      }
+    ],
+    "expressions": [],
+    "tables": [
+      {
+        "name": "DimCustomer",
+        "description": "TOM/TMDL bridge smoke-test dimension.",
+        "isHidden": false,
+        "columns": [
+          {
+            "name": "CustomerID",
+            "kind": "data",
+            "dataType": "int64",
+            "sourceColumn": "CustomerID",
+            "isKey": true,
+            "summarizeBy": "none"
+          },
+          {
+            "name": "CustomerName",
+            "kind": "data",
+            "dataType": "string",
+            "sourceColumn": "CustomerName",
+            "summarizeBy": "none"
+          }
+        ],
+        "measures": [],
+        "hierarchies": [],
+        "partitions": [
+          {
+            "name": "DimCustomer",
+            "mode": "import",
+            "sourceType": "m",
+            "expression": "let\n    Source = #table(type table [CustomerID = Int64.Type, CustomerName = text], {})\nin\n    Source"
+          }
+        ],
+        "annotations": []
+      },
+      {
+        "name": "FactSales",
+        "description": "TOM/TMDL bridge smoke-test fact.",
+        "isHidden": false,
+        "columns": [
+          {
+            "name": "SalesID",
+            "kind": "data",
+            "dataType": "int64",
+            "sourceColumn": "SalesID",
+            "isKey": true,
+            "summarizeBy": "none"
+          },
+          {
+            "name": "CustomerID",
+            "kind": "data",
+            "dataType": "int64",
+            "sourceColumn": "CustomerID",
+            "summarizeBy": "none"
+          },
+          {
+            "name": "SalesAmount",
+            "kind": "data",
+            "dataType": "double",
+            "sourceColumn": "SalesAmount",
+            "summarizeBy": "sum",
+            "formatString": "#,0.00"
+          },
+          {
+            "name": "SalesWithTax",
+            "kind": "calculated",
+            "dataType": "double",
+            "expression": "'FactSales'[SalesAmount] * 1.18",
+            "summarizeBy": "sum",
+            "formatString": "#,0.00"
+          }
+        ],
+        "measures": [
+          {
+            "name": "Total Sales",
+            "expression": "SUM('FactSales'[SalesAmount])",
+            "formatString": "#,0.00",
+            "displayFolder": "Qlik Measures",
+            "description": "Smoke-test measure serialized through Microsoft TOM.",
+            "annotations": [
+              {
+                "name": "Qlik.OriginalExpression",
+                "value": "Sum(SalesAmount)"
+              }
+            ]
+          }
+        ],
+        "hierarchies": [],
+        "partitions": [
+          {
+            "name": "FactSales",
+            "mode": "import",
+            "sourceType": "m",
+            "expression": "let\n    Source = #table(type table [SalesID = Int64.Type, CustomerID = Int64.Type, SalesAmount = number], {})\nin\n    Source"
+          }
+        ],
+        "annotations": []
+      }
+    ],
+    "relationships": [
+      {
+        "name": "FactSales_CustomerID_DimCustomer_CustomerID",
+        "fromTable": "FactSales",
+        "fromColumn": "CustomerID",
+        "toTable": "DimCustomer",
+        "toColumn": "CustomerID",
+        "fromCardinality": "many",
+        "toCardinality": "one",
+        "crossFilteringBehavior": "oneDirection",
+        "isActive": true,
+        "annotations": [
+          {
+            "name": "Migration.RelationshipSource",
+            "value": "Smoke test"
+          }
+        ]
+      }
+    ]
+  }
+}

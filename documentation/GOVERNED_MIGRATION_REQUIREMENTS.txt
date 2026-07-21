@@ -1,0 +1,715 @@
+Prompt: Enhance QlikView-to-Power BI Migration Application
+Objective
+
+Enhance the existing QlikView-to-Power BI migration application so that it accurately reconstructs the Qlik load-script logic, produces a clean Power Query and Power BI semantic model, and provides a reliable validation and correction workflow.
+
+The implementation must be generic and work dynamically for different QlikView applications, QVS files, QVW/PRJ exports, source files, table names, field names, joins, composite keys, variables, expressions, and data models.
+
+Do not hard-code fixes for Sales, Calendar, Rolling Sales, or any current test data.
+
+The enhancement must address these core areas:
+
+Validation issues must disappear immediately after they are fixed.
+Composite keys must be created only when genuinely required.
+Qlik joins must be reconstructed correctly in Power Query.
+Duplicate attributes must be removed from the final semantic model.
+Unnecessary tables and keys must not be exported.
+The UI must clearly show what was fixed and where.
+Every migration decision must be traceable and testable.
+1. Fix the validation and issue lifecycle
+Current problem
+
+A measure can be corrected and saved successfully, but the old validation card remains in:
+
+AI Auto-Fix Center
+Issue Summary
+Blocking Issues
+PBIP Export validation
+Error counts
+
+This makes it unclear whether the saved change was applied.
+
+Required implementation
+
+Create a single authoritative validation-state pipeline.
+
+The application must not maintain separate stale copies of validation issues across different pages.
+
+Use one validation result store, for example:
+
+interface ValidationState {
+  workspaceRevision: number;
+  validationRevision: number;
+  status: "idle" | "validating" | "valid" | "invalid";
+  issues: ValidationIssue[];
+  lastValidatedAt?: string;
+}
+
+Every editable object must update the workspace revision:
+
+workspaceRevision += 1;
+
+This includes changes to:
+
+DAX measures
+Qlik variables
+Power Query M
+Data types
+Relationships
+Composite keys
+Source mappings
+Table inclusion or exclusion
+Column inclusion or exclusion
+Join mappings
+Measure approval
+Display folders
+Visual bindings
+
+After the user clicks Save and validate:
+
+Save edited object
+→ Persist object in workspace
+→ Rebuild affected dependencies
+→ Increment workspace revision
+→ Run targeted validation
+→ Run model-level validation
+→ Replace the current issue collection
+→ Recalculate counters
+→ Refresh every validation component
+
+Do not append new issues to the previous issue collection.
+
+Use replacement semantics:
+
+setValidationIssues(latestValidationResult.issues);
+
+Do not use:
+
+setValidationIssues(previous => [
+  ...previous,
+  ...latestValidationResult.issues
+]);
+Issue identity
+
+Create a deterministic issue key:
+
+issueKey = [
+  issue.category,
+  issue.objectType,
+  issue.objectId,
+  issue.property,
+  issue.dependencyId
+].join("::");
+
+After revalidation:
+
+Remove issue keys that are no longer returned.
+Update issues that still exist.
+Add only genuinely new issues.
+Do not retain stale resolved cards.
+Correct user experience
+
+For the Rolling Sales example:
+
+Open Rolling Sales measure
+→ Remove manual conversion marker
+→ Enter valid DAX
+→ Save and validate
+
+When validation succeeds:
+
+The measure card changes to approved.
+The manual-review message disappears.
+The corresponding Auto-Fix card disappears.
+Blocking and remaining counters update immediately.
+PBIP Export becomes enabled when no other blockers exist.
+Show a confirmation:
+Rolling Sales validated successfully.
+1 issue resolved.
+
+When validation still fails:
+
+Replace the previous issue with the current exact error.
+Highlight the failing DAX token.
+Do not show a generic stale message.
+2. Implement targeted and complete revalidation
+
+Saving a measure should first perform targeted validation, but the final result must also be checked against the complete model.
+
+Use this sequence:
+
+Parse DAX
+→ Validate syntax
+→ Resolve variables
+→ Resolve measures
+→ Resolve tables and columns
+→ Validate circular dependencies
+→ Validate output type
+→ Validate display folder
+→ Validate visual bindings
+→ Run complete semantic-model validation
+
+The save operation must update both:
+
+Enterprise DAX inventory
+Semantic-model measure object
+
+Do not allow the UI copy and PBIP/TMDL copy of the measure to become different.
+
+Create one canonical measure object and derive all views from it.
+
+3. Reconstruct composite keys correctly
+Requirement
+
+When Qlik associates or joins two tables using multiple fields, create a Power BI composite key from those fields.
+
+Example:
+
+Sales:
+CustomerID
+RegionCode
+
+CustomerRegion:
+CustomerID
+RegionCode
+
+The generated key may be:
+
+CompositeKey_CustomerID_RegionCode =
+    Text.From([CustomerID], "en-US")
+    & "¦"
+    & Text.From([RegionCode], "en-US")
+
+The same key expression must be generated in both tables.
+
+Do not create unnecessary keys
+
+A composite key must be generated only when all the following are true:
+
+Two or more fields participate in the same logical association or join.
+The same ordered field set exists on both sides.
+A single stable key is not already available.
+The fields are not merely unrelated columns that happen to share names.
+The relationship is required in the final Power BI model.
+The resulting key does not create a many-to-many ambiguity unnecessarily.
+
+Do not create composite keys from every collection of common columns.
+
+Composite-key signature
+
+Use a deterministic signature:
+
+function compositeKeySignature(fields: string[]): string {
+  return fields
+    .map(normalizeIdentifier)
+    .sort()
+    .join("|");
+}
+
+However, preserve the original join-field order in the generated concatenation when order has semantic significance.
+
+Key deduplication
+
+Before creating a key, check:
+
+Does the same composite-key signature already exist?
+Does an equivalent physical key already exist?
+Is this key used by a relationship?
+Is this only an intermediate Qlik association?
+Will the table be excluded from the semantic model?
+
+Do not generate:
+
+Duplicate composite-key columns
+Keys for staging-only tables
+Keys for tables removed from the final model
+Keys that are never used
+Multiple keys representing the same field set
+Both a single-field relationship and equivalent composite relationship
+Null-safe key generation
+
+Generate null-safe and collision-safe keys:
+
+CompositeKey =
+    Text.Combine(
+        {
+            if [CustomerID] = null
+                then "<NULL>"
+                else Text.From([CustomerID], "en-US"),
+
+            if [RegionCode] = null
+                then "<NULL>"
+                else Text.From([RegionCode], "en-US")
+        },
+        "¦"
+    )
+
+Escape separator values when the source data can contain the delimiter.
+
+4. Reconstruct Qlik JOIN logic in Power Query
+Required behaviour
+
+When the Qlik script contains:
+
+LEFT JOIN (Sales)
+LOAD
+    CustomerID,
+    CustomerName,
+    CustomerGroup
+RESIDENT Customers;
+
+generate equivalent Power Query logic:
+
+Joined_Customers =
+    Table.NestedJoin(
+        Sales_PreviousStep,
+        {"CustomerID"},
+        Customers_Staging,
+        {"CustomerID"},
+        "CustomersJoin",
+        JoinKind.LeftOuter
+    ),
+
+Expanded_Customers =
+    Table.ExpandTableColumn(
+        Joined_Customers,
+        "CustomersJoin",
+        {"CustomerName", "CustomerGroup"},
+        {"CustomerName", "CustomerGroup"}
+    )
+
+The join must be applied in the correct script execution sequence.
+
+Support:
+
+LEFT JOIN
+INNER JOIN
+RIGHT JOIN
+OUTER JOIN
+LEFT KEEP
+INNER KEEP
+RIGHT KEEP
+CONCATENATE
+NOConcatenate
+Resident load joins
+Preceding-load joins
+Multi-column joins
+Aliased join fields
+ApplyMap and mapping loads
+Join chains involving intermediate tables
+Join-column analysis
+
+Before expanding columns, compare:
+
+Columns already available in the main table
+Columns available in the joined table
+Join key columns
+Columns explicitly loaded by the Qlik JOIN
+Columns renamed through AS
+Columns later dropped
+Columns later used by calculations
+Columns needed by DAX measures
+
+Do not expand:
+
+Join key columns again
+Fields already present in the main table
+Duplicate fields with the same semantic meaning
+Fields explicitly excluded by later Qlik logic
+Technical fields used only during transformation
+
+Use collision-safe expansion logic.
+
+5. Avoid duplicate columns after joins
+
+Before Table.ExpandTableColumn, calculate:
+
+const mainColumns = getAvailableColumns(mainTable);
+const joinKeys = getJoinKeys(joinOperation);
+const requestedColumns = getQlikJoinOutputColumns(joinOperation);
+
+const expandableColumns = requestedColumns.filter(column =>
+  !joinKeys.includes(column) &&
+  !mainColumns.includes(column)
+);
+
+When the column exists in both tables but has different business meaning, do not silently remove it. Apply a deterministic qualified name and flag it for review:
+
+Customers.CustomerStatus
+Sales.CustomerStatus
+
+When it is the same business attribute, preserve only one final semantic column.
+
+6. Prune duplicated attributes from secondary tables
+User requirement
+
+When attributes from a lookup or secondary table have already been joined into the main table, do not keep the same duplicated attributes in both final semantic-model tables unless they are genuinely needed.
+
+Example:
+
+Customers source:
+CustomerID
+CustomerName
+CustomerGroup
+Country
+CustomerCategory
+
+If Qlik joins these fields into Sales:
+
+CustomerName
+CustomerGroup
+Country
+
+then the final Customers model table should not automatically retain duplicate copies of those same fields unless the Customers table remains a genuine dimension.
+
+Important distinction
+
+Do not modify or destroy the raw staging query.
+
+Use separate query layers:
+
+Customers_Staging
+→ complete source representation
+→ load disabled
+
+Customers_Model
+→ semantic-model projection
+→ load enabled only when required
+
+The staging query must preserve the original source for lineage and debugging.
+
+The model query should retain only fields needed for:
+
+Relationship keys
+Attributes not copied to the main table
+Measures
+Hierarchies
+Filters and slicers
+Slowly changing dimension behaviour
+Other table relationships
+Business-required dimension analysis
+Example
+
+When these fields are moved into Sales:
+
+CustomerName
+CustomerGroup
+Country
+
+and only these remain unique to the Customer dimension:
+
+CustomerID
+CustomerCategory
+CustomerStartDate
+
+then Customers_Model should contain only those necessary fields.
+
+However, do not remove Customer attributes merely because they were joined into the fact table when the user still requires a proper star-schema Customer dimension.
+
+The model-design engine must decide between:
+
+Qlik-equivalent denormalised model
+
+and:
+
+Optimised Power BI star schema
+
+based on the selected model-build mode.
+
+7. Proactively design the Power BI data model
+
+Add model-build modes:
+
+Qlik-equivalent mode
+Reproduce Qlik joins and table grain closely.
+Retain denormalised main tables.
+Preserve load-script behaviour.
+Minimise structural differences.
+Power BI optimised mode
+Create clear fact and dimension tables.
+Avoid duplicated attributes.
+Prefer one-to-many relationships.
+Avoid bidirectional relationships unless required.
+Remove unnecessary staging and aggregate tables.
+Move visual aggregations to DAX.
+Retain source and intermediate queries as load-disabled staging queries.
+Review mode
+Generate recommended relationships as inactive.
+Allow users to review and activate relationships in Power BI Desktop.
+
+The user must be able to select the model-build mode before PBIP generation.
+
+8. Determine whether a table is needed
+
+Before exporting each table, assign one classification:
+
+Fact
+Dimension
+Bridge
+Reference/static
+Measure host
+Load-disabled staging
+Excluded
+Manual review
+
+Evaluate:
+
+Is it consumed by another table?
+Is it dropped later in Qlik?
+Is it only an aggregate that can become DAX?
+Is it an inline or mapping table?
+Does it contain unique model attributes?
+Is it used by a relationship?
+Is it referenced by a measure?
+Is it used by a visual?
+Does it provide row-level security?
+Is it only QVD persistence logic?
+Is it an unnecessary intermediate resident table?
+
+Do not export unwanted model tables merely because they appeared in the Qlik script.
+
+Retain their lineage as staging metadata.
+
+9. DAX aggregation policy
+
+Qlik script aggregations such as:
+
+LOAD
+    CustomerID,
+    Sum(SalesAmount) AS TotalSales
+RESIDENT Sales
+GROUP BY CustomerID;
+
+should generally become:
+
+Total Sales =
+SUM('Sales'[SalesAmount])
+
+Do not materialise a SalesSummary Power Query table unless:
+
+It changes grain required by later ETL logic.
+It is joined to other datasets.
+It is reused as an input to subsequent Qlik transformations.
+Its result cannot be reproduced safely through DAX filter context.
+Performance testing proves materialisation is required.
+
+The migration decision must appear in the reconstruction report.
+
+10. Improve issue-card navigation
+
+Every issue card must be clickable.
+
+The card must contain:
+
+Problem summary
+Object type
+Exact object name
+Current invalid value
+Recommended correction
+Auto-fix confidence
+Destination breadcrumb
+Open exact object
+Apply safe fix
+Ignore with reason, only for non-blocking items
+
+Example:
+
+Rolling Sales
+DAX measure
+Manual conversion marker remains
+
+Destination:
+DAX Measures → Sales → Rolling Sales → DAX editor
+
+Clicking the card must:
+
+Open DAX Measures
+→ Select Sales table
+→ Expand Rolling Sales
+→ Scroll to editor
+→ Highlight manual conversion marker
+→ Focus editor
+
+After saving and validating, return to the issue center and remove the resolved card.
+
+11. Add model-design explanation to the UI
+
+For every generated relationship or key, show:
+
+Why was this relationship created?
+Which Qlik statements produced it?
+Which source fields participate?
+Why is a composite key required?
+Why was another possible relationship rejected?
+Which columns were moved into the main table?
+Which duplicate columns were excluded?
+Which table was retained as staging only?
+
+Example:
+
+Relationship: Sales → Customers
+
+Qlik evidence:
+LEFT JOIN (Sales)
+LOAD CustomerID, CustomerName
+RESIDENT Customers;
+
+Decision:
+The join is reconstructed in Sales Power Query.
+Customers_Staging is retained with loading disabled.
+Customers_Model is excluded because no remaining unique
+dimension attributes are used.
+12. Debugging and audit requirements
+
+Every migration pass must produce structured logs:
+
+Pass 1 – Script parsing
+Pass 2 – Table dependency graph
+Pass 3 – Field lineage
+Pass 4 – Join reconstruction
+Pass 5 – Composite-key analysis
+Pass 6 – Aggregation-to-DAX analysis
+Pass 7 – Table classification
+Pass 8 – Power Query generation
+Pass 9 – Semantic-model generation
+Pass 10 – Validation and repair
+
+Each decision must record:
+
+interface MigrationDecision {
+  id: string;
+  category: string;
+  sourceScript?: string;
+  sourceStatement?: string;
+  sourceTable?: string;
+  targetTable?: string;
+  sourceFields?: string[];
+  targetFields?: string[];
+  decision: string;
+  reason: string;
+  confidence: number;
+  requiresReview: boolean;
+}
+
+Export these files in the PBIP migration folder:
+
+Migration/
+├── table-dependency-graph.json
+├── field-lineage.json
+├── join-reconstruction.json
+├── composite-key-decisions.json
+├── table-classification.json
+├── dax-conversion-decisions.json
+├── validation-results.json
+└── migration-debug.log
+13. Required regression tests
+
+Add automated tests for all of the following.
+
+Validation refresh
+Create invalid measure
+→ issue appears
+→ correct measure
+→ save and validate
+→ issue disappears
+→ blocking count decreases
+Invalid measure remains
+Edit measure but leave missing dependency
+→ old issue replaced with current exact issue
+→ issue does not duplicate
+Composite key
+Join uses CustomerID + RegionCode
+→ one composite key generated on each table
+→ one relationship created
+No unnecessary key
+Two tables share several column names
+but Qlik does not associate or join through all of them
+→ no composite key generated
+Duplicate composite key
+Same multi-column association encountered twice
+→ only one key column generated
+Join expansion
+LEFT JOIN Customers into Sales
+→ CustomerName added once
+→ CustomerID not expanded twice
+Source-table projection
+CustomerName moved into Sales
+Customers_Model retains only required remaining fields
+Customers_Staging preserves full source
+Star-schema preservation
+Customers is used as a slicer dimension
+→ Customers_Model is retained
+→ attributes are not incorrectly removed
+Aggregation conversion
+GROUP BY summary used only for reporting
+→ summary table excluded
+→ DAX measure generated
+Intermediate aggregate reuse
+Aggregate table is used by later ETL
+→ table remains materialised
+→ not incorrectly converted only to DAX
+Join ordering
+Calculated field depends on a joined field
+→ join occurs before calculated-field step
+Issue navigation
+Click measure issue
+→ exact measure editor receives focus
+14. Export-blocking conditions
+
+PBIP generation must be blocked when any of these remain:
+
+Invalid DAX
+Manual conversion markers
+Missing table or column references
+Unresolved join keys
+Composite-key type mismatches
+Duplicate model columns
+Duplicate measure names
+Ambiguous table classification
+Broken relationship endpoints
+Circular dependencies
+Power Query query errors
+UI-reviewed types not reflected in final M
+A final model table depends on an excluded query
+A generated relationship references a staging-only table
+An issue was fixed but validation was not rerun
+
+Show the exact blocking object and direct navigation.
+
+15. Definition of done
+
+The work is complete only when:
+
+Corrected issues disappear immediately after successful validation.
+Issue counters always match the current issue list.
+No stale validation cards remain.
+Qlik multi-column associations create one valid composite key only when required.
+Unused keys are not generated.
+Qlik joins are reproduced in correct sequence in Power Query.
+Join fields and expanded fields are not duplicated.
+Raw sources remain available as load-disabled staging queries.
+Final model tables contain only necessary columns.
+Aggregation-only Qlik tables are converted to DAX when appropriate.
+Every table and relationship has a traceable migration decision.
+Clicking an issue navigates to the exact object and editor.
+PBIP export is blocked for unresolved errors.
+All automated and regression tests pass.
+The implementation is generic and contains no sample-specific table or field names.
+Important implementation principle
+
+Do not implement this as a collection of UI-only patches.
+
+The order must be:
+
+Qlik script parsing
+→ dependency graph
+→ field lineage
+→ table-grain analysis
+→ join reconstruction
+→ composite-key analysis
+→ table classification
+→ Power Query generation
+→ DAX generation
+→ semantic-model generation
+→ validation
+→ UI presentation

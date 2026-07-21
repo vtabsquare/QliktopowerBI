@@ -1,0 +1,709 @@
+# Qlik to Power BI Equivalent Reference (Basic → Advanced)
+
+Each syntax topic now progresses **Basic → Intermediate → Advanced**, so you can use this both as a quick lookup and as a learning path.
+
+---
+
+## 1. Script Statements
+
+### LOAD
+
+**Basic** — straight column selection
+```qlik
+LOAD CustomerID, CustomerName, Region FROM Customers.qvd (qvd);
+```
+```m
+let
+    Source = Excel.Workbook(File.Contents("Customers.xlsx"), null, true),
+    Sheet1 = Source{[Item="Customers",Kind="Sheet"]}[Data],
+    Selected = Table.SelectColumns(Sheet1, {"CustomerID", "CustomerName", "Region"})
+in
+    Selected
+```
+
+**Intermediate** — with derived column and rename
+```qlik
+LOAD
+    CustomerID,
+    CustomerName,
+    Upper(Region) AS RegionCode,
+    Amount AS SalesAmount
+FROM Customers.qvd (qvd);
+```
+```m
+let
+    Source = ...,
+    Renamed = Table.RenameColumns(Source, {{"Amount", "SalesAmount"}}),
+    Added = Table.AddColumn(Renamed, "RegionCode", each Text.Upper([Region]), type text)
+in
+    Added
+```
+
+**Advanced** — conditional load with WHERE + inline expression
+```qlik
+LOAD
+    CustomerID,
+    CustomerName,
+    If(Amount > 10000, 'High', If(Amount > 1000, 'Medium', 'Low')) AS Tier
+FROM Customers.qvd (qvd)
+WHERE Not IsNull(CustomerID);
+```
+```m
+let
+    Source = ...,
+    Filtered = Table.SelectRows(Source, each [CustomerID] <> null),
+    Tiered = Table.AddColumn(Filtered, "Tier", each
+        if [Amount] > 10000 then "High"
+        else if [Amount] > 1000 then "Medium"
+        else "Low", type text)
+in
+    Tiered
+```
+
+### SQL SELECT / LIB CONNECT
+
+**Basic**
+```qlik
+LIB CONNECT TO 'MyDataSource';
+SQL SELECT * FROM Sales;
+```
+```m
+let
+    Source = Sql.Database("server", "database"),
+    Sales = Source{[Schema="dbo",Item="Sales"]}[Data]
+in
+    Sales
+```
+
+**Intermediate** — filtered native query
+```qlik
+SQL SELECT * FROM Sales WHERE Year = 2026;
+```
+```m
+Table.SelectRows(Sales, each [Year] = 2026)
+```
+
+**Advanced** — pass-through native SQL (preserves query folding / complex joins done server-side)
+```qlik
+SQL SELECT s.OrderID, c.CustomerName, s.Amount
+FROM Sales s
+JOIN Customers c ON s.CustomerID = c.CustomerID
+WHERE s.Year = 2026;
+```
+```m
+let
+    Source = Sql.Database("server", "database"),
+    Query = Value.NativeQuery(Source,
+        "SELECT s.OrderID, c.CustomerName, s.Amount
+         FROM Sales s
+         JOIN Customers c ON s.CustomerID = c.CustomerID
+         WHERE s.Year = 2026", null, [EnableFolding=true])
+in
+    Query
+```
+
+### INCLUDE (shared script)
+
+**Basic** — no direct equivalent; use a shared query
+```qlik
+$(Include=lib://Scripts/CommonVariables.qvs);
+```
+Power BI: create a query named `zz_Config` (prefixed so it sorts to the bottom of the Queries pane) that returns your constants as a record, then reference `zz_Config[StartDate]` from other queries.
+
+**Advanced** — shared logic as a reusable function
+```m
+// Query: fnCleanText (a Power Query Function)
+(inputText as text) as text =>
+    Text.Trim(Text.Clean(inputText))
+```
+Invoke it anywhere: `Table.TransformColumns(Source, {"CustomerName", fnCleanText})`
+
+### DROP TABLE / DROP FIELD / RENAME
+
+**Basic**
+```qlik
+DROP FIELD OldColumnName FROM Sales;
+RENAME FIELD OldName TO NewName;
+```
+```m
+Table.RemoveColumns(Sales, {"OldColumnName"})
+Table.RenameColumns(Sales, {{"OldName", "NewName"}})
+```
+
+**Advanced** — dropping multiple fields dynamically (columns not in a keep-list)
+```m
+let
+    KeepList = {"CustomerID", "CustomerName", "Region"},
+    AllCols = Table.ColumnNames(Source),
+    DropList = List.Difference(AllCols, KeepList),
+    Result = Table.RemoveColumns(Source, DropList)
+in
+    Result
+```
+
+---
+
+## 2. ETL Operations
+
+### RESIDENT LOAD
+
+**Basic** — single-level reference
+```qlik
+FactSales:
+LOAD OrderID, CustomerID, Amount RESIDENT Sales WHERE Amount > 0;
+```
+```m
+let
+    Source = Sales,
+    Selected = Table.SelectColumns(Source, {"OrderID", "CustomerID", "Amount"}),
+    Filtered = Table.SelectRows(Selected, each [Amount] > 0)
+in
+    Filtered
+```
+
+**Intermediate** — RESIDENT with GROUP BY, then dropping the original
+```qlik
+Summary:
+LOAD CustomerID, Sum(Amount) AS Total RESIDENT Sales GROUP BY CustomerID;
+DROP TABLE Sales;
+```
+```m
+// Summary query
+let
+    Source = Sales,
+    Grouped = Table.Group(Source, {"CustomerID"}, {{"Total", each List.Sum([Amount]), type number}})
+in
+    Grouped
+// Sales query itself is simply not loaded into the model (disable "Enable Load")
+```
+
+**Advanced** — nested RESIDENT chain (2+ levels deep)
+```qlik
+Stage1:
+LOAD CustomerID, Amount RESIDENT Sales WHERE Amount > 0;
+
+Stage2:
+LOAD CustomerID, Amount RESIDENT Stage1 WHERE Amount < 100000;
+```
+```m
+// Stage1
+let
+    Source_L1 = Sales,
+    Selected_L1 = Table.SelectColumns(Source_L1, {"CustomerID", "Amount"}),
+    Filtered_L1 = Table.SelectRows(Selected_L1, each [Amount] > 0)
+in
+    Filtered_L1
+
+// Stage2 — note the unique suffixes; reusing "Source"/"Selected" at this
+// level would collide with Stage1's step names when both are referenced
+// or auto-generated by a converter tool
+let
+    Source_L2 = Stage1,
+    Selected_L2 = Table.SelectColumns(Source_L2, {"CustomerID", "Amount"}),
+    Filtered_L2 = Table.SelectRows(Selected_L2, each [Amount] < 100000)
+in
+    Filtered_L2
+```
+> This is the exact pattern behind the naming-collision bug: a generator that names steps generically (`Source`, `Selected`) instead of per-nesting-level breaks the moment RESIDENT chains go two levels deep, because M requires unique identifiers within a `let` — but two *different* queries can each safely have their own `Source_L1`/`Source_L2`-style names since each query has its own `let` scope. The real risk is a single flattened `let` block trying to combine both levels' steps together.
+
+### CONCATENATE / NOCONCATENATE
+
+**Basic**
+```qlik
+Sales2025: LOAD * FROM Sales_2025.qvd (qvd);
+CONCATENATE (Sales2025) LOAD * FROM Sales_2026.qvd (qvd);
+```
+```m
+Table.Combine({Sales2025, Sales2026})
+```
+
+**Advanced** — concatenate with mismatched schemas (auto-align columns, like Qlik does by field name)
+```qlik
+CONCATENATE (Sales2025) LOAD OrderID, Amount, NewField FROM Sales_2026.qvd (qvd);
+```
+```m
+// Table.Combine auto-unions by column name and fills missing columns with null,
+// matching Qlik's field-name-based concatenation behavior
+Table.Combine({Sales2025, Sales2026})
+```
+
+### JOINS
+
+**Basic** — LEFT JOIN
+```qlik
+LEFT JOIN (Sales) LOAD CustomerID, Region RESIDENT Customers;
+```
+```m
+let
+    Merged = Table.NestedJoin(Sales, {"CustomerID"}, Customers, {"CustomerID"}, "CustomerData", JoinKind.LeftOuter),
+    Expanded = Table.ExpandTableColumn(Merged, "CustomerData", {"Region"})
+in
+    Expanded
+```
+
+**Intermediate** — multi-key join
+```qlik
+INNER JOIN (Sales) LOAD CustomerID, Region, ProductID, Category RESIDENT Customers;
+```
+```m
+Table.NestedJoin(Sales, {"CustomerID", "ProductID"}, Customers, {"CustomerID", "ProductID"}, "Data", JoinKind.Inner)
+```
+
+**Advanced** — LEFT KEEP (filter-only, no field merge)
+```qlik
+LEFT KEEP (Sales) LOAD CustomerID RESIDENT ActiveCustomers;
+```
+```m
+let
+    ActiveIDs = Table.Column(ActiveCustomers, "CustomerID"),
+    Filtered = Table.SelectRows(Sales, each List.Contains(ActiveIDs, [CustomerID]))
+in
+    Filtered
+```
+> `LEFT KEEP` only *filters* rows in Sales to those that have a match — it doesn't bring in any new columns. `Table.NestedJoin` + `Table.ExpandTableColumn` is for when you need the columns too; `List.Contains` is the leaner equivalent when you just need the filter.
+
+### MAPPING LOAD + APPLYMAP
+
+**Basic**
+```qlik
+MapRegion: MAPPING LOAD CustomerID, Region FROM RegionMap.qvd (qvd);
+LOAD CustomerID, ApplyMap('MapRegion', CustomerID, 'Unknown') AS Region RESIDENT Sales;
+```
+```m
+let
+    RegionMap = ...,
+    Sales = ...,
+    Merged = Table.NestedJoin(Sales, {"CustomerID"}, RegionMap, {"CustomerID"}, "MapData", JoinKind.LeftOuter),
+    Expanded = Table.ExpandTableColumn(Merged, "MapData", {"Region"}),
+    Replaced = Table.ReplaceValue(Expanded, null, "Unknown", Replacer.ReplaceValue, {"Region"})
+in
+    Replaced
+```
+
+**Advanced** — ApplyMap with composite (two-field) key
+```qlik
+MapDiscount: MAPPING LOAD CustomerID & '|' & ProductID, Discount FROM Discounts.qvd (qvd);
+LOAD CustomerID, ProductID, ApplyMap('MapDiscount', CustomerID & '|' & ProductID, 0) AS Discount RESIDENT Sales;
+```
+```m
+let
+    Discounts = ...,
+    Sales = ...,
+    // build the composite key on both sides before merging, mirroring Qlik's & concatenation
+    SalesKeyed = Table.AddColumn(Sales, "CompositeKey", each [CustomerID] & "|" & [ProductID]),
+    DiscountsKeyed = Table.AddColumn(Discounts, "CompositeKey", each [CustomerID] & "|" & [ProductID]),
+    Merged = Table.NestedJoin(SalesKeyed, {"CompositeKey"}, DiscountsKeyed, {"CompositeKey"}, "MapData", JoinKind.LeftOuter),
+    Expanded = Table.ExpandTableColumn(Merged, "MapData", {"Discount"}),
+    Replaced = Table.ReplaceValue(Expanded, null, 0, Replacer.ReplaceValue, {"Discount"}),
+    Cleaned = Table.RemoveColumns(Replaced, {"CompositeKey"})
+in
+    Cleaned
+```
+
+### GROUP BY
+
+**Basic**
+```qlik
+LOAD Region, Sum(Amount) AS TotalAmount RESIDENT Sales GROUP BY Region;
+```
+```m
+Table.Group(Sales, {"Region"}, {{"TotalAmount", each List.Sum([Amount]), type number}})
+```
+
+**Advanced** — multiple aggregations + multi-level grouping
+```qlik
+LOAD Region, Year,
+    Sum(Amount) AS TotalAmount,
+    Count(OrderID) AS OrderCount,
+    Avg(Amount) AS AvgAmount
+RESIDENT Sales GROUP BY Region, Year;
+```
+```m
+Table.Group(Sales, {"Region", "Year"}, {
+    {"TotalAmount", each List.Sum([Amount]), type number},
+    {"OrderCount", each Table.RowCount(_), Int64.Type},
+    {"AvgAmount", each List.Average([Amount]), type number}
+})
+```
+
+### CROSSTABLE (unpivot)
+
+**Basic**
+```qlik
+CROSSTABLE (Month, Sales, 1) LOAD * FROM WideSalesTable.xlsx;
+```
+```m
+Table.UnpivotOtherColumns(Source, {"KeyColumn1"}, "Month", "Sales")
+```
+
+**Advanced** — CROSSTABLE with multiple qualifier fields kept fixed
+```qlik
+CROSSTABLE (Month, Sales, 2) LOAD Region, Product, Jan, Feb, Mar FROM WideSalesTable.xlsx;
+```
+```m
+// "2" in Qlik means the first 2 fields (Region, Product) stay fixed
+Table.UnpivotOtherColumns(Source, {"Region", "Product"}, "Month", "Sales")
+```
+
+### INTERVALMATCH
+
+**Basic**
+```qlik
+LOAD * INLINE [Age, AgeGroup
+0, Young];
+INTERVALMATCH (Age) LOAD Min, Max RESIDENT Ranges;
+```
+```m
+// Emulate with a merge on a custom match condition — join every Age row
+// against Ranges and keep rows where Min <= Age <= Max
+let
+    Merged = Table.AddColumn(AgeTable, "MatchedRange", each
+        Table.SelectRows(Ranges, (r) => r[Min] <= [Age] and [Age] <= r[Max]))
+in
+    Merged
+```
+
+**Advanced** — bucket assignment as a single lookup column (better perf than row-by-row filter for large tables)
+```m
+let
+    Buckets = Ranges,
+    AddBucket = Table.AddColumn(AgeTable, "AgeGroup", each
+        let
+            match = Table.SelectRows(Buckets, (r) => r[Min] <= [Age] and [Age] <= r[Max])
+        in
+            if Table.RowCount(match) > 0 then match{0}[AgeGroup] else null)
+in
+    AddBucket
+```
+> For large fact tables, precomputing buckets in the *source system* (SQL CASE WHEN) or building a numbered bridge table and merging on a rounded key is faster than a row-wise `each` scan.
+
+### GENERIC LOAD
+
+**Basic**
+```qlik
+GENERIC LOAD CustomerID, AttributeName, AttributeValue FROM Attributes.qvd (qvd);
+```
+Power BI: no direct GENERIC equivalent (it auto-splits into one table per AttributeName in Qlik). Use `Table.Pivot`:
+```m
+Table.Pivot(Source, List.Distinct(Source[AttributeName]), "AttributeName", "AttributeValue")
+```
+
+---
+
+## 3. Variables
+
+**Basic** — static text variable
+```qlik
+SET vCurrency = '$';
+```
+Power BI: a Power Query parameter, or a disconnected DAX measure `Currency Symbol = "$"` used in title/format strings.
+
+**Intermediate** — computed LET variable used in filter
+```qlik
+LET vStartDate = MakeDate(2026,1,1);
+LOAD ... WHERE Date >= $(vStartDate);
+```
+```m
+StartDate = #date(2026, 1, 1) meta [IsParameterQuery=true, Type="Date"]
+Table.SelectRows(Sales, each [Date] >= StartDate)
+```
+
+**Advanced** — dynamic variable recalculated each reload (e.g., rolling window)
+```qlik
+LET vCutoff = Today() - 90;
+LOAD ... WHERE OrderDate >= $(vCutoff);
+```
+```m
+let
+    Cutoff = Date.AddDays(DateTime.Date(DateTime.LocalNow()), -90),
+    Filtered = Table.SelectRows(Sales, each [OrderDate] >= Cutoff)
+in
+    Filtered
+```
+> For report-time rolling windows (rather than refresh-time), do this in DAX instead so it responds to "today" at query time: `CALCULATE(SUM(Sales[Amount]), Sales[OrderDate] >= TODAY() - 90)`.
+
+---
+
+## 9. Set Analysis → DAX
+
+**Basic** — fixed value filter
+```qlik
+Sum({<Year={2026}>} Amount)
+```
+```dax
+CALCULATE(SUM(Sales[Amount]), Sales[Year] = 2026)
+```
+
+**Basic** — TOTAL (ignore dimensions)
+```qlik
+Sum(TOTAL Amount)
+```
+```dax
+CALCULATE(SUM(Sales[Amount]), ALL(Sales))
+```
+
+**Intermediate** — multiple conditions, exclusion
+```qlik
+Sum({<Year={2026}, Region-={'Unknown'}>} Amount)
+```
+```dax
+CALCULATE(
+    SUM(Sales[Amount]),
+    Sales[Year] = 2026,
+    Sales[Region] <> "Unknown"
+)
+```
+
+**Intermediate** — P()/E() set functions (selection-driven)
+```qlik
+Sum({<CustomerID = P(SelectedCustomers)>} Amount)
+```
+```dax
+CALCULATE(
+    SUM(Sales[Amount]),
+    TREATAS(VALUES(SelectedCustomers[CustomerID]), Sales[CustomerID])
+)
+```
+
+**Advanced** — AGGR (chart-level nested aggregation, e.g. average of per-customer totals)
+```qlik
+Avg(Aggr(Sum(Amount), CustomerID))
+```
+```dax
+AVERAGEX(
+    SUMMARIZE(Sales, Sales[CustomerID], "Total", SUM(Sales[Amount])),
+    [Total]
+)
+```
+
+**Advanced** — comparing current selection vs. a fixed baseline set (year-over-year with set analysis)
+```qlik
+Sum({<Year={2026}>} Amount) - Sum({<Year={2025}>} Amount)
+```
+```dax
+VAR CurrentYear = CALCULATE(SUM(Sales[Amount]), Sales[Year] = 2026)
+VAR PriorYear = CALCULATE(SUM(Sales[Amount]), Sales[Year] = 2025)
+RETURN CurrentYear - PriorYear
+```
+
+**Advanced** — alternate states (no direct DAX equivalent)
+Qlik alternate states let two selections coexist on one sheet. Emulate with:
+```dax
+// Disconnected "Scenario" table with values "A" / "B", each driving a
+// different filter via SELECTEDVALUE inside CALCULATE/SWITCH
+Scenario Sales =
+SWITCH(
+    SELECTEDVALUE(ScenarioSelector[Scenario]),
+    "A", CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North"),
+    "B", CALCULATE(SUM(Sales[Amount]), Sales[Region] = "South")
+)
+```
+
+---
+
+## 10. Data Modeling — Basic → Advanced
+
+**Basic** — synthetic key (2 shared fields between tables)
+Qlik auto-creates a synthetic key table. Power BI: add an explicit composite key column and relate on that single column instead of two separate relationships.
+```m
+Table.AddColumn(Sales, "Key", each Text.Combine({[CustomerID], [ProductID]}, "|"))
+```
+
+**Intermediate** — circular reference broken via role-playing dimension
+If `Sales` relates to `Date` via both `OrderDate` and `ShipDate`, don't create two active relationships to the same Date table. Duplicate the Date table (`ShipDate` table) and relate the second one inactive, activated per-measure with `USERELATIONSHIP`:
+```dax
+Shipped Sales = CALCULATE(SUM(Sales[Amount]), USERELATIONSHIP(Sales[ShipDate], ShipDateTable[Date]))
+```
+
+**Advanced** — link/bridge table for many-to-many across multiple facts
+```qlik
+// Qlik link table pattern
+LinkTable: LOAD DISTINCT CustomerID, ProductID RESIDENT Sales;
+CONCATENATE (LinkTable) LOAD DISTINCT CustomerID, ProductID RESIDENT Returns;
+```
+```m
+let
+    FromSales = Table.Distinct(Table.SelectColumns(Sales, {"CustomerID", "ProductID"})),
+    FromReturns = Table.Distinct(Table.SelectColumns(Returns, {"CustomerID", "ProductID"})),
+    Bridge = Table.Distinct(Table.Combine({FromSales, FromReturns}))
+in
+    Bridge
+```
+Relate `Bridge` 1-to-many to both `Sales` and `Returns`; keep cross-filter direction single unless you specifically need bidirectional filtering, to avoid ambiguous filter paths.
+
+**Advanced** — Master Calendar → full Date table with fiscal periods
+```qlik
+MasterCalendar:
+LOAD
+    Date,
+    Year(Date) AS Year,
+    Month(Date) AS Month,
+    If(Month(Date)>=4, Year(Date)+1, Year(Date)) AS FiscalYear
+RESIDENT TempDates;
+```
+```dax
+DateTable =
+ADDCOLUMNS(
+    CALENDAR(DATE(2024,1,1), DATE(2027,12,31)),
+    "Year", YEAR([Date]),
+    "Month", MONTH([Date]),
+    "FiscalYear", IF(MONTH([Date]) >= 4, YEAR([Date]) + 1, YEAR([Date]))
+)
+```
+Mark as Date Table in Model view (Table tools → Mark as date table) on the `[Date]` column.
+
+---
+
+## 4–8, 11–14: Full Term Reference
+
+## 4. Conditional Functions
+
+  Qlik          Power BI
+  ------------- ------------------------
+  IF()          if...then...else
+  ALT()         COALESCE
+  PICK()        SWITCH
+  MATCH()       SWITCH / List.Contains
+  MIXMATCH()    Text.Compare
+  WILDMATCH()   Text.Contains
+  CLASS()       Conditional Column
+  COALESCE()    COALESCE
+  ISNULL()      Value.IsNull
+  ISNUM()       Value.Is
+  ISTEXT()      Value.Is
+
+## 5. String Functions
+
+  Qlik          Power BI
+  ------------- --------------------
+  LEN()         Text.Length
+  TRIM()        Text.Trim
+  LTRIM()       Text.TrimStart
+  RTRIM()       Text.TrimEnd
+  UPPER()       Text.Upper
+  LOWER()       Text.Lower
+  MID()         Text.Middle
+  LEFT()        Text.Start
+  RIGHT()       Text.End
+  REPLACE()     Text.Replace
+  SUBFIELD()    Text.Split
+  KEEPCHAR()    Text.Select
+  PURGECHAR()   Text.Remove
+  INDEX()       Text.PositionOf
+  FINDONEOF()   Text.PositionOfAny
+  CONCAT()      Text.Combine
+
+## 6. Numeric Functions
+
+  Qlik      Power BI
+  --------- ------------------
+  ROUND()   Number.Round
+  FLOOR()   Number.RoundDown
+  CEIL()    Number.RoundUp
+  ABS()     Number.Abs
+  SQRT()    Number.Sqrt
+  MOD()     Number.Mod
+  RAND()    Number.Random
+  EXP()     Number.Exp
+  LOG()     Number.Log
+  POWER()   Number.Power
+
+## 7. Date Functions
+
+  Qlik           Power BI
+  -------------- -------------------
+  TODAY()        DateTime.LocalNow
+  NOW()          DateTime.LocalNow
+  DATE()         Date.From
+  DATE#()        Date.FromText
+  TIMESTAMP()    DateTime.From
+  YEAR()         Date.Year
+  MONTH()        Date.Month
+  DAY()          Date.Day
+  WEEK()         Date.WeekOfYear
+  WEEKDAY()      Date.DayOfWeek
+  MONTHSTART()   Date.StartOfMonth
+  MONTHEND()     Date.EndOfMonth
+  YEARSTART()    Date.StartOfYear
+  YEAREND()      Date.EndOfYear
+  ADDMONTHS()    Date.AddMonths
+  ADDYEARS()     Date.AddYears
+  MAKEDATE()     #date()
+
+## 8. Aggregations
+
+  Qlik                 DAX
+  -------------------- ----------------------
+  SUM()                SUM
+  COUNT()              COUNT
+  COUNT(DISTINCT)      DISTINCTCOUNT
+  AVG()                AVERAGE
+  MIN()                MIN
+  MAX()                MAX
+  ONLY()               SELECTEDVALUE
+  CONCAT()             CONCATENATEX
+  AGGR()               SUMMARIZE + SUMX
+  FIRSTSORTEDVALUE()   TOPN + SELECTEDVALUE
+
+## 11. Power Query Transformations
+
+  Qlik           Power Query
+  -------------- -------------------
+  APPLYMAP       Merge Query
+  RESIDENT       Reference Query
+  CONCATENATE    Append Queries
+  JOIN           Merge Queries
+  DROP FIELD     Remove Columns
+  RENAME FIELD   Rename Columns
+  DISTINCT       Remove Duplicates
+  GROUP BY       Group By
+  ORDER BY       Sort
+  WHERE          Filter Rows
+  INLINE         Enter Data
+  AUTOGENERATE   List.Generate
+  CROSSTABLE     Unpivot
+  GENERIC LOAD   Pivot
+
+## 12. Data Sources
+
+  Qlik         Power BI
+  ------------ ----------------------------------
+  QVD          QVD Connector / Converted Source
+  CSV          Csv.Document
+  Excel        Excel.Workbook
+  XML          Xml.Tables
+  JSON         Json.Document
+  REST         Web.Contents
+  SQL Server   Sql.Database
+  Oracle       Oracle.Database
+  Snowflake    Snowflake Connector
+  Databricks   Databricks Connector
+
+## 13. Visualization Concepts
+
+  Qlik              Power BI
+  ----------------- --------------------------
+  Sheet             Report Page
+  Object            Visual
+  Master Item       Measure / Column
+  Bookmark          Bookmark
+  Alternate State   Disconnected Slicer
+  Variable Input    What-if Parameter
+  Section Access    Row-Level Security (RLS)
+  Selection State   Filter Context
+
+## 14. Manual Review Required
+
+  Qlik             Power BI
+  ---------------- -------------------
+  Peek()           Manual Rewrite
+  Previous()       Manual Rewrite
+  RecNo()          Index Column
+  RowNo()          Index Column
+  IterNo()         List.Generate
+  NoOfRows()       Table.RowCount
+  NoOfFields()     Table.ColumnCount
+  InputField       Manual Rewrite
+  Partial Reload   Not Supported
+  Loosen Table     Manual Review
+  Binary Load      Manual Migration
