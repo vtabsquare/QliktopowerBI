@@ -1,0 +1,34 @@
+name: Build Cloudflare DEV Candidate
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-dev-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build DEV candidate
+        env:
+          VITE_APP_ENV: development
+        run: npm run build:dev
+      - name: Discover build output
+        shell: bash
+        run: |
+          echo "Build completed. Cloudflare deployment is intentionally gated until repository secrets are present and runtime output is verified."
+          find . -maxdepth 3 -type d \( -name dist -o -name client -o -name public \) -print | sort
